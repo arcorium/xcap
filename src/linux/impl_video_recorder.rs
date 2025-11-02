@@ -31,6 +31,13 @@ impl ImplVideoRecorder {
         }
     }
 
+    pub fn pause(&self) -> XCapResult<()> {
+        match self {
+            ImplVideoRecorder::Xorg(recorder) => recorder.pause(),
+            ImplVideoRecorder::Wayland(recorder) => recorder.pause(),
+        }
+    }
+
     pub fn stop(&self) -> XCapResult<()> {
         match self {
             ImplVideoRecorder::Xorg(recorder) => recorder.stop(),

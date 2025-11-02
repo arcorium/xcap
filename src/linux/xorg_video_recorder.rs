@@ -1,6 +1,7 @@
 use super::impl_monitor::ImplMonitor;
 use crate::error::{XCapError, XCapResult};
-use crate::video_recorder::{Frame, RecorderWaker};
+use crate::video_recorder::{Condition, Frame, RecorderWaker};
+use log::*;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -9,8 +10,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct XorgVideoRecorder {
     monitor: ImplMonitor,
-    sender: Sender<Frame>,
-    running: Arc<Mutex<bool>>,
+    condition: Arc<Mutex<Condition>>,
     recorder_waker: Arc<RecorderWaker>,
 }
 
@@ -19,38 +19,39 @@ impl XorgVideoRecorder {
         let (sender, receiver) = mpsc::channel();
         let recorder = Self {
             monitor,
-            sender,
-            running: Arc::new(Mutex::new(false)),
+            condition: Arc::new(Mutex::new(Condition::Init)),
             recorder_waker: Arc::new(RecorderWaker::new()),
         };
 
-        recorder.on_frame()?;
+        recorder.on_frame(sender)?;
 
         Ok((recorder, receiver))
     }
 
-    pub fn on_frame(&self) -> XCapResult<()> {
+    pub fn on_frame(&self, sender: Sender<Frame>) -> XCapResult<()> {
         let monitor = self.monitor.clone();
-        let sender = self.sender.clone();
-        let running_flag = self.running.clone();
+        let cond = self.condition.clone();
         let recorder_waker = self.recorder_waker.clone();
 
         thread::spawn(move || {
             loop {
                 if let Err(err) = recorder_waker.wait() {
-                    log::error!("Recorder waker error: {err:?}");
+                    error!("Recorder waker error: {err:?}");
                     break Err(err);
                 }
 
-                let is_running = match running_flag.lock() {
-                    Ok(guard) => *guard,
+                let cond = match cond.lock() {
+                    Ok(guard) => guard,
                     Err(e) => {
-                        log::error!("Failed to lock running flag: {e:?}");
+                        error!("Failed to lock running flag: {e:?}");
                         break Err(XCapError::from(e));
                     }
                 };
 
-                if !is_running {
+                if !cond.is_running() {
+                    // when condition is Condition::Stopped and the waker is woken up it will make the spawn
+                    // to quit
+                    drop(sender);
                     break Ok(());
                 }
 
@@ -62,18 +63,18 @@ impl XorgVideoRecorder {
 
                         let frame = Frame::new(width, height, raw);
                         if let Err(e) = sender.send(frame) {
-                            log::error!("Failed to send frame: {e:?}");
+                            error!("Failed to send frame: {e:?}");
                             break Err(XCapError::new(format!("Failed to send frame: {e}")));
                         }
                     }
                     Err(e) => {
-                        log::error!("Failed to capture frame: {e:?}");
+                        error!("Failed to capture frame: {e:?}");
                         thread::sleep(Duration::from_millis(10));
                         continue;
                     }
                 }
 
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_millis(1)); // TODO: Add fps capability
             }
         });
 
@@ -81,23 +82,57 @@ impl XorgVideoRecorder {
     }
 
     pub fn start(&self) -> XCapResult<()> {
-        let mut running = self.running.lock().map_err(XCapError::from)?;
-        if *running {
-            return Ok(());
+        let mut running = self.condition.lock().map_err(XCapError::from)?;
+        match *running {
+            Condition::Running => {
+                return Ok(());
+            }
+            Condition::Stopped => {
+                return Err(XCapError::new("Recorder is already stopped"));
+            }
+            _ => {}
         }
-        *running = true;
+        *running = Condition::Running;
 
         self.recorder_waker.wake()?;
 
         Ok(())
     }
 
-    pub fn stop(&self) -> XCapResult<()> {
-        let mut running = self.running.lock().map_err(XCapError::from)?;
-        *running = false;
+    pub fn pause(&self) -> XCapResult<()> {
+        let mut running = self.condition.lock().map_err(XCapError::from)?;
+        match *running {
+            Condition::Paused => {
+                return Ok(());
+            }
+            Condition::Stopped => {
+                return Err(XCapError::new("Recorder is already stopped"));
+            }
+            _ => {}
+        }
+        *running = Condition::Paused;
 
         self.recorder_waker.sleep()?;
 
         Ok(())
+    }
+
+    pub fn stop(&self) -> XCapResult<()> {
+        let mut running = self.condition.lock().map_err(XCapError::from)?;
+        if *running == Condition::Stopped {
+            return Ok(());
+        }
+        *running = Condition::Stopped;
+
+        self.recorder_waker.wake()?;
+        Ok(())
+    }
+}
+
+impl Drop for XorgVideoRecorder {
+    fn drop(&mut self) {
+        if let Err(e) = self.stop() {
+            error!("Failed to stop recorder: {e:?}");
+        }
     }
 }
