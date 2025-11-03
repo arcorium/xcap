@@ -132,7 +132,7 @@ impl XorgVideoRecorder {
 impl Drop for XorgVideoRecorder {
     fn drop(&mut self) {
         if let Err(e) = self.stop() {
-            error!("Failed to stop recorder: {e:?}");
+            error!("Failed to stop xorg video recorder: {e:?}");
         }
     }
 }

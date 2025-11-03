@@ -444,10 +444,7 @@ impl WaylandVideoRecorder {
     }
 
     pub fn stop(&self) -> XCapResult<()> {
-        if let Err(e) = self.set_state(Condition::Stopped, None) {
-            return Err(e);
-        }
-        Ok(())
+        self.set_state(Condition::Stopped, None)
     }
 
     fn set_state(
@@ -479,5 +476,13 @@ impl WaylandVideoRecorder {
         *cond = target_cond;
         let _ = self.condition_sender.send(target_cond);
         Ok(())
+    }
+}
+
+impl Drop for WaylandVideoRecorder {
+    fn drop(&mut self) {
+        if let Err(e) = self.stop() {
+            error!("Failed to stop wayland video recorder: {e:?}");
+        }
     }
 }

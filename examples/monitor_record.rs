@@ -7,25 +7,28 @@ fn main() {
 
     let monitor = Monitor::from_point(100, 100).unwrap();
 
-    let (video_recorder, sx) = monitor.video_recorder().unwrap();
+    {
+        let (video_recorder, sx) = monitor.video_recorder().unwrap();
 
-    let handle = thread::spawn(move || {
-        while let Ok(frame) = sx.recv() {
-            println!("frame: {:?}", frame.width);
-        }
-        info!("frame receiver thread exited")
-    });
+        thread::spawn(move || {
+            while let Ok(frame) = sx.recv() {
+                println!("frame: {:?}", frame.width);
+            }
+            info!("frame receiver thread exited")
+        });
 
-    println!("start");
-    video_recorder.start().unwrap();
-    thread::sleep(Duration::from_secs(2));
-    println!("pause");
-    video_recorder.pause().unwrap();
-    thread::sleep(Duration::from_secs(2));
-    println!("start");
-    video_recorder.start().unwrap();
-    thread::sleep(Duration::from_secs(2));
-    println!("stop");
-    video_recorder.stop().unwrap(); // NOTE: currently it is expected the user to always call stop() manually
-    // drop trait is not implemented yet
+        println!("start");
+        video_recorder.start().unwrap();
+        thread::sleep(Duration::from_secs(2));
+        println!("pause");
+        video_recorder.pause().unwrap();
+        thread::sleep(Duration::from_secs(2));
+        println!("start");
+        video_recorder.start().unwrap();
+        thread::sleep(Duration::from_secs(2));
+        println!("stop");
+        video_recorder.stop().unwrap(); // it is safe to call stop multiple times and even to not call stop at all
+    }
+
+    std::thread::sleep(Duration::from_millis(10));
 }
