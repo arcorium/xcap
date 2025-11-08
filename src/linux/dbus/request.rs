@@ -29,10 +29,11 @@ pub enum ResponseCode {
 
 impl Display for ResponseCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = *self as u32;
         match self {
-            ResponseCode::Success => write!(f, "Success"),
-            ResponseCode::Cancelled => write!(f, "Cancelled"),
-            ResponseCode::Failed => write!(f, "Failed"),
+            ResponseCode::Success => write!(f, "{code} Success"),
+            ResponseCode::Cancelled => write!(f, "{code} Cancelled"),
+            ResponseCode::Failed => write!(f, "{code} Failed"),
         }
     }
 }
@@ -119,34 +120,34 @@ pub fn request_handle_path(conn: &Connection, token: &str) -> XCapResult<OwnedOb
 }
 
 pub fn on_blocking_response<T: FromResponse, F>(
-        conn: &Connection,
-        token: &str,
-        f: F,
-    ) -> XCapResult<Responses<T>>
-    where
-        F: FnOnce() -> XCapResult<()>,
-    {
-        let request_handle_path = request_handle_path(conn, token)?;
-        let proxy = RequestProxyBlocking::new(conn, request_handle_path)?;
-        let mut resp_it = proxy.receive_response()?;
+    conn: &Connection,
+    token: &str,
+    f: F,
+) -> XCapResult<Responses<T>>
+where
+    F: FnOnce() -> XCapResult<()>,
+{
+    let request_handle_path = request_handle_path(conn, token)?;
+    let proxy = RequestProxyBlocking::new(conn, request_handle_path)?;
+    let mut resp_it = proxy.receive_response()?;
 
-        f()?;
+    f()?;
 
-        let resp = resp_it
-            .next()
-            .ok_or_else(|| XCapError::new("No response received"))?;
+    let resp = resp_it
+        .next()
+        .ok_or_else(|| XCapError::new("No response received"))?;
 
-        let mut resp = resp.args()?;
+    let mut resp = resp.args()?;
 
-        if !resp.is_success() {
-            return Err(XCapError::new("Response code is not success"));
-        }
-
-        Ok(Responses::<T> {
-            code: resp.code,
-            results: resp.try_deserialize()?,
-        })
+    if !resp.is_success() {
+        return Err(XCapError::new("Response code is not success"));
     }
+
+    Ok(Responses::<T> {
+        code: resp.code,
+        results: resp.try_deserialize()?,
+    })
+}
 
 /*
 #[cfg(test)]
