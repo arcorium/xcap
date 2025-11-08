@@ -1,12 +1,14 @@
+use image::{RgbaImage, open};
+use lazy_static::lazy_static;
+use log::info;
+use percent_encoding::percent_decode_str;
+use serde::Deserialize;
+use std::sync::LazyLock;
 use std::{
     env::{self, var_os},
     path::{Path, PathBuf},
 };
-
-use image::{RgbaImage, open};
-use lazy_static::lazy_static;
-use percent_encoding::percent_decode_str;
-use serde::Deserialize;
+use std::ops::Deref;
 use url::Url;
 use xcb::{
     ConnResult, Connection as XcbConnection, Xid,
@@ -16,6 +18,7 @@ use xcb::{
 use zbus::{
     Result as ZBusResult,
     blocking::{Connection as ZBusConnection, Proxy},
+    zvariant,
     zvariant::Type,
 };
 
@@ -26,17 +29,47 @@ lazy_static! {
         let display_name = env::var("DISPLAY").unwrap_or("DISPLAY:1".to_string());
         XcbConnection::connect(Some(display_name.as_str()))
     };
-    static ref ZBUS_CONNECTION: ZBusResult<ZBusConnection> = ZBusConnection::session();
+}
+
+static ZBUS_CONN: LazyLock<Connection> = LazyLock::new(|| {
+    let conn = ZBusConnection::session().expect("Failed to to create dbus connection");
+    Connection::new(conn).expect("Failed to get DBus unique name")
+});
+
+pub struct Connection {
+    inner: ZBusConnection,
+    unique_id: String,
+}
+
+impl Connection {
+    fn new(inner: ZBusConnection) -> Result<Self, String> {
+        let unique_id = inner
+            .unique_name()
+            .ok_or_else(|| "Get DBus unique name failed".to_string())?
+            .trim_start_matches(':')
+            .replace('.', "_");
+        Ok(Self { inner, unique_id })
+    }
+
+    pub fn unique_name(&self) -> &str {
+        &self.unique_id
+    }
+}
+
+impl Deref for Connection {
+    type Target = ZBusConnection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 pub fn get_xcb_connection_and_index() -> XCapResult<&'static (XcbConnection, i32)> {
     XCB_CONNECTION_AND_INDEX.as_ref().map_err(XCapError::new)
 }
 
-pub fn get_zbus_connection() -> XCapResult<&'static ZBusConnection> {
-    ZBUS_CONNECTION
-        .as_ref()
-        .map_err(|err| XCapError::ZbusError(err.clone()))
+pub fn get_zbus_connection() -> &'static Connection {
+    &ZBUS_CONN
 }
 
 pub fn wayland_detect() -> bool {

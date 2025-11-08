@@ -18,6 +18,7 @@ mod platform;
 #[cfg(target_os = "android")]
 #[path = "android/mod.rs"]
 mod platform;
+mod dir;
 
 pub use image;
 

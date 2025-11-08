@@ -1,3 +1,19 @@
+use super::{
+    dbus,
+    impl_monitor::ImplMonitor,
+    utils::{get_zbus_connection, get_zbus_portal_request, wait_zbus_response},
+};
+use crate::dir::{data_dir, project_dir};
+use crate::platform::dbus::request::{RequestProxyBlocking, request_handle_path};
+use crate::platform::dbus::screencast;
+use crate::platform::dbus::screencast::{
+    CreateSessionOption, CreateSessionResponse, CursorModes, PersistMode, ScreenCastProxyBlocking,
+    SelectSourcesOptionMap, SelectSourcesOptions, SourceType, StartOptionMap, StartOptions,
+};
+use crate::platform::dbus::session::session_handle_path;
+use crate::video_recorder::Condition;
+use crate::{XCapError, XCapResult, video_recorder::Frame};
+use bitflags::bitflags;
 use log::{error, info, trace};
 use pipewire::context::{ContextBox, ContextRc};
 use pipewire::main_loop::MainLoopRc;
@@ -20,6 +36,9 @@ use pipewire::{
     },
     stream::{Stream, StreamFlags},
 };
+use std::borrow::Cow;
+use std::io::Read;
+use std::path::Path;
 use std::sync::Mutex;
 use std::{
     collections::HashMap,
@@ -32,17 +51,14 @@ use std::{
     },
     thread,
 };
+use zbus::zvariant::OwnedValue;
 use zbus::{
     blocking::Proxy,
+    zvariant,
     zvariant::{DeserializeDict, OwnedFd, OwnedObjectPath, Type, Value},
 };
 
-use super::{
-    impl_monitor::ImplMonitor,
-    utils::{get_zbus_connection, get_zbus_portal_request, wait_zbus_response},
-};
-use crate::video_recorder::Condition;
-use crate::{XCapError, XCapResult, video_recorder::Frame};
+const SCREEN_CAST_TOKEN_FILE_PATH: &str = "RESTORE_TOKEN";
 
 #[allow(dead_code)]
 #[derive(DeserializeDict, Type, Debug)]
@@ -70,98 +86,211 @@ pub struct ScreenCastStartResponse {
     pub restore_token: Option<String>,
 }
 
+bitflags! {
+    #[derive(PartialEq, Ord, PartialOrd, Eq, Copy, Clone)]
+    struct ScreenCastFlag : u8 {
+        const HideCursor = 1;
+        const EnableMulti = 2;
+        const SavePermission = 4;  // Only available at minimum version 4
+    }
+}
+
 /// https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html
 pub struct ScreenCast<'a> {
-    proxy: Proxy<'a>,
+    proxy: ScreenCastProxyBlocking<'a>,
+    flags: ScreenCastFlag,
+    sources: SourceType,
+    cursor_modes: CursorModes,
+    restore_token: Option<String>,
 }
 
 impl ScreenCast<'_> {
-    pub fn new() -> XCapResult<Self> {
-        let conn = get_zbus_connection()?;
-        let proxy = Proxy::new(
-            conn,
-            "org.freedesktop.portal.Desktop",
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.ScreenCast",
-        )?;
+    pub fn new(flags: ScreenCastFlag, sources: SourceType) -> XCapResult<Self> {
+        let conn = get_zbus_connection();
+        let proxy = ScreenCastProxyBlocking::new(&conn)?;
 
-        Ok(ScreenCast { proxy })
+        let v = proxy.version()?;
+        let modes = if flags.contains(ScreenCastFlag::HideCursor) {
+            if v < 2 {
+                return Err(XCapError::new(format!(
+                    "Version {} does not have capability to fetch cursor modes",
+                    v
+                )));
+            }
+
+            let modes = proxy.available_cursor_modes()?;
+            if !modes.is_hidden_available() {
+                return Err(XCapError::new("Cursor hiding is not supported"));
+            }
+            modes
+        } else {
+            CursorModes::empty()
+        };
+
+        let restore_token = if flags.contains(ScreenCastFlag::SavePermission) {
+            if v < 4 {
+                return Err(XCapError::new(format!(
+                    "Version {} does not have capability to save screen cast permission",
+                    v
+                )));
+            }
+
+            let path = data_dir().join(SCREEN_CAST_TOKEN_FILE_PATH);
+            if path.is_file() {
+                let mut result = String::new();
+                let mut file = std::fs::File::open(path)?;
+                file.read_to_string(&mut result)?;
+
+                Some(result)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(ScreenCast {
+            proxy,
+            flags,
+            sources,
+            cursor_modes: modes,
+            restore_token,
+        })
     }
 
     pub fn create_session(&self) -> XCapResult<OwnedObjectPath> {
-        let conn = get_zbus_connection()?;
+        let conn = get_zbus_connection();
 
-        let mut options = HashMap::new();
+        let handle_token = format!("xcap_{}", rand::random::<u32>());
+        let session_handle_token = format!("xcap_{}", rand::random::<u32>());
+        let req_session_handle_path = request_handle_path(conn, &handle_token)?;
 
-        let handle_token = rand::random::<u32>().to_string();
-        let portal_request = get_zbus_portal_request(conn, &handle_token)?;
+        let portal_request = RequestProxyBlocking::new(&conn, req_session_handle_path)?;
+        let mut resp_it = portal_request.receive_response()?; // subscribe to the request
 
-        options.insert("handle_token", Value::from(&handle_token));
+        _ = self.proxy.create_session(CreateSessionOption {
+            handle_token: &handle_token,
+            session_handle_token: &session_handle_token,
+        })?;
 
-        let session_handle_token = rand::random::<u32>().to_string();
-        options.insert("session_handle_token", Value::from(&session_handle_token));
+        let resp = resp_it
+            .next()
+            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
 
-        self.proxy.call_method("CreateSession", &(options))?;
+        let mut resp = resp.args()?;
 
-        let response: ScreenCastCreateSessionResponse = wait_zbus_response(&portal_request)?;
+        if !resp.is_success() {
+            return Err(XCapError::new(format!(
+                "got error response from portal: {}",
+                resp.code
+            )));
+        }
 
-        let unique_name = conn
-            .unique_name()
-            .ok_or(XCapError::new("Failed to get unique name"))?;
-        let unique_identifier = unique_name.trim_start_matches(':').replace('.', "_");
+        let resp: CreateSessionResponse = resp.deserialize();
 
-        let session = OwnedObjectPath::try_from(format!(
-            "/org/freedesktop/portal/desktop/session/{unique_identifier}/{session_handle_token}"
-        ))?;
-
-        if session.as_str() != response.session_handle {
+        let session_path = session_handle_path(&conn, &session_handle_token)?;
+        if session_path.as_str() != resp.session_handle.as_str() {
             return Err(XCapError::new("Session handle mismatch"));
         }
 
-        Ok(session)
+        Ok(session_path)
     }
 
     pub fn select_sources(&self, session: &OwnedObjectPath) -> XCapResult<()> {
-        let conn = get_zbus_connection()?;
+        let conn = get_zbus_connection();
 
-        let mut options = HashMap::new();
+        let handle_token = format!("xcap_sess_{}", rand::random::<u32>());
+        // let portal_request = get_zbus_portal_request(conn, &handle_token)?;
+        let req_handle_path = request_handle_path(conn, &handle_token)?;
 
-        let handle_token = rand::random::<u32>().to_string();
-        let portal_request = get_zbus_portal_request(conn, &handle_token)?;
+        let req_proxy = RequestProxyBlocking::new(&conn, req_handle_path)?;
+        let mut resp_it = req_proxy.receive_response()?;
 
-        options.insert("handle_token", Value::from(handle_token));
-        options.insert("types", Value::from(1_u32));
-        options.insert("multiple", Value::from(false));
+        /*options.insert("handle_token", Value::from(handle_token));
+                options.insert("types", Value::from(1_u32));
+                options.insert("multiple", Value::from(false));
+        */
+        let restore_token = if let Some(ref token) = self.restore_token
+            && self.flags.contains(ScreenCastFlag::SavePermission)
+        {
+            Some(token.clone())
+        } else {
+            None
+        };
 
-        self.proxy
-            .call_method("SelectSources", &(session, options))?;
+        const PERSIST_MODE: PersistMode = PersistMode::None;
+        self.proxy.select_sources(SelectSourcesOptions {
+            session_handle: session.as_ref(),
+            options: SelectSourcesOptionMap {
+                handle_token: &handle_token,
+                types: self.sources,
+                multiple: self.flags.contains(ScreenCastFlag::EnableMulti),
+                cursor_mode: self
+                    .cursor_modes
+                    .best_mode(self.flags.contains(ScreenCastFlag::HideCursor)),
+                restore_token,
+                persist_mode: PERSIST_MODE,
+            },
+        })?;
 
-        portal_request.receive_signal("Response")?;
+        // portal_request.receive_signal("Response")?;
+
+        let resp = resp_it
+            .next()
+            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
+        let resp = resp.args()?;
+
+        if !resp.is_success() {
+            return Err(XCapError::new(format!(
+                "got error response from portal: {}",
+                resp.code
+            )));
+        }
 
         Ok(())
     }
 
-    pub fn start(&self, session: &OwnedObjectPath) -> XCapResult<ScreenCastStartResponse> {
-        let conn = get_zbus_connection()?;
+    pub fn start(
+        &self,
+        window_handle: Option<&str>,
+        session: &OwnedObjectPath,
+    ) -> XCapResult<screencast::StartResponse> {
+        let conn = get_zbus_connection();
 
-        let mut options = HashMap::new();
+        // let mut options = HashMap::new();
+        let handle_token = format!("xcap_{}", rand::random::<u32>().to_string());
+        let req_path = request_handle_path(conn, &handle_token)?;
+        let req_proxy = RequestProxyBlocking::new(&conn, req_path)?;
+        let mut resp_it = req_proxy.receive_response()?;
+        // let portal_request = get_zbus_portal_request(conn, &handle_token)?;
 
-        let handle_token = rand::random::<u32>().to_string();
-        let portal_request = get_zbus_portal_request(conn, &handle_token)?;
+        // options.insert("handle_token", Value::from(&handle_token));
 
-        options.insert("handle_token", Value::from(&handle_token));
+        // self.proxy.call_method("Start", &(session, "", options))?;
 
-        self.proxy.call_method("Start", &(session, "", options))?;
+        self.proxy.start(StartOptions {
+            session_handle: session.as_ref(),
+            parent_window: window_handle.or(Some("")).unwrap(),
+            options: StartOptionMap {
+                handle_token: &handle_token,
+            },
+        })?;
 
-        wait_zbus_response(&portal_request)
-    }
+        let resp = resp_it
+            .next()
+            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
+        let mut resp = resp.args()?;
 
-    #[allow(dead_code)]
-    pub fn open_pipe_wire_remote(&self, session: &OwnedObjectPath) -> XCapResult<OwnedFd> {
-        let options: HashMap<&str, Value<'_>> = HashMap::new();
-        let fd: OwnedFd = self.proxy.call("OpenPipeWireRemote", &(session, options))?;
+        if !resp.is_success() {
+            return Err(XCapError::new(format!(
+                "got error response from portal: {}",
+                resp.code
+            )));
+        }
 
-        Ok(fd)
+        // wait_zbus_response(&portal_request)
+
+        Ok(resp.deserialize())
     }
 }
 
@@ -196,18 +325,20 @@ impl WaylandVideoRecorder {
         let (frame_sender, frame_receiver) = mpsc::channel();
         let (cond_sender, cond_receiver) = channel::channel();
 
-        let screen_cast = ScreenCast::new()?;
+        const FLAGS: ScreenCastFlag = ScreenCastFlag::empty();
+        const SOURCES: SourceType = SourceType::Monitor;
+        let screen_cast = ScreenCast::new(FLAGS, SOURCES)?;
         let session = screen_cast.create_session()?;
         screen_cast.select_sources(&session)?;
-        let response = screen_cast.start(&session)?;
+        let response = screen_cast.start(None, &session)?;
 
         // 获取流节点ID
         let stream_id = response
             .streams
-            .ok_or(XCapError::new("Stream ID not found"))?
+            // .ok_or(XCapError::new("Stream ID not found"))?
             .first()
             .ok_or(XCapError::new("Stream ID not found"))?
-            .0;
+            .pipewire_node_id;
 
         let recorder = Self {
             monitor,
