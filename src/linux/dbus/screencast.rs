@@ -15,15 +15,15 @@ pub struct CreateSessionOption<'a> {
 }
 
 #[derive(Debug)]
-pub struct CreateSessionResponse<'a> {
-    pub session_handle: ObjectPath<'a>,
+pub struct CreateSessionResponse {
+    pub session_handle: String,
 }
 
-impl CreateSessionResponse<'_> {
+impl CreateSessionResponse {
     const KEYS: [&'static str; 1] = ["session_handle"];
 }
 
-impl<'a> FromResponse for CreateSessionResponse<'a> {
+impl FromResponse for CreateSessionResponse {
     fn try_from_response(map: &mut HashMap<String, OwnedValue>) -> XCapResult<Self> {
         Ok(Self {
             session_handle: map

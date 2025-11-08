@@ -46,20 +46,18 @@ mod tests {
             on_blocking_response(conn, handle_token.as_str(), || {
                 proxy.create_session(CreateSessionOption {
                     handle_token: &handle_token,
-                    session_handle_token: &generate_session_handle(),
+                    session_handle_token: &session_token,
                 })?;
 
                 Ok(())
             })?;
 
-        Ok(())
-
-        /*assert_eq!(resp.code, ResponseCode::Success);
+        assert_eq!(resp.code, ResponseCode::Success);
         assert_eq!(resp.session_handle, session_handle_path.as_str());
 
         let sess_proxy = SessionProxyBlocking::new(conn, session_handle_path)?;
         sess_proxy.close()?;
 
-        Ok(())*/
+        Ok(())
     }
 }
