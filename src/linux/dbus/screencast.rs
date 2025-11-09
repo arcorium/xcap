@@ -31,7 +31,7 @@ impl FromResponse for CreateSessionResponse {
     }
 }
 
-#[derive(Debug, zvariant::Type, zvariant::DeserializeDict, zvariant::Value)]
+#[derive(Debug, Clone, zvariant::Type, zvariant::DeserializeDict, zvariant::Value)]
 #[zvariant(signature = "a{sv}")]
 pub struct StartStreamProperty {
     pub id: Option<String>,
@@ -61,14 +61,14 @@ impl FromResponse for StartStreamProperty {
     }
 }
 
-#[derive(Debug, zvariant::Type, serde::Deserialize, zvariant::Value)]
+#[derive(Debug, Clone, zvariant::Type, serde::Deserialize, zvariant::Value)]
 #[zvariant(signature = "ua{sv}")]
 pub struct StartStreamResponse {
     pub pipewire_node_id: u32,
     pub property: StartStreamProperty,
 }
 
-#[derive(Debug, zvariant::Type, serde::Deserialize)]
+#[derive(Debug, Clone, zvariant::Type, serde::Deserialize)]
 #[zvariant(signature = "a{sv}")]
 pub struct StartResponse {
     pub streams: Option<Vec<StartStreamResponse>>,

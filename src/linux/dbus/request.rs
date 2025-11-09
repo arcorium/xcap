@@ -63,6 +63,14 @@ impl<T> Responses<T> {
     pub fn is_success(&self) -> bool {
         self.code.is_success()
     }
+
+    pub fn results(&self) -> &T {
+        &self.results
+    }
+
+    pub fn results_mut(&mut self) -> &mut T {
+        &mut self.results
+    }
 }
 
 impl<T> Deref for Responses<T> {

@@ -4,13 +4,15 @@ use super::{
     utils::{get_zbus_connection, get_zbus_portal_request, wait_zbus_response},
 };
 use crate::dir::{data_dir, project_dir};
-use crate::platform::dbus::request::{request_handle_path, RequestProxyBlocking};
-use crate::platform::dbus::screencast;
+use crate::platform::dbus::request::{
+    on_blocking_response, request_handle_path, RequestProxyBlocking, Responses,
+};
 use crate::platform::dbus::screencast::{
     CreateSessionOption, CreateSessionResponse, CursorModes, PersistMode, ScreenCastProxyBlocking,
-    SelectSourcesOption, SourceType, StartOption,
+    SelectSourcesOption, SourceType, StartOption, StartResponse,
 };
 use crate::platform::dbus::session::session_handle_path;
+use crate::platform::dbus::{generate_session_handle, generate_token_handle, screencast};
 use crate::video_recorder::Condition;
 use crate::{video_recorder::Frame, XCapError, XCapResult};
 use bitflags::bitflags;
@@ -105,7 +107,7 @@ pub struct ScreenCast<'a> {
 }
 
 impl ScreenCast<'_> {
-    pub fn new(flags: ScreenCastFlag, sources: SourceType) -> XCapResult<Self> {
+    fn new(flags: ScreenCastFlag, sources: SourceType) -> XCapResult<Self> {
         let conn = get_zbus_connection();
         let proxy = ScreenCastProxyBlocking::new(&conn)?;
 
@@ -161,23 +163,18 @@ impl ScreenCast<'_> {
     pub fn create_session(&self) -> XCapResult<OwnedObjectPath> {
         let conn = get_zbus_connection();
 
-        let handle_token = format!("xcap_{}", rand::random::<u32>());
-        let session_handle_token = format!("xcap_{}", rand::random::<u32>());
-        let req_session_handle_path = request_handle_path(conn, &handle_token)?;
+        let handle_token = generate_token_handle();
+        let session_handle_token = generate_session_handle();
 
-        let portal_request = RequestProxyBlocking::new(&conn, req_session_handle_path)?;
-        let mut resp_it = portal_request.receive_response()?; // subscribe to the request
+        let resp: Responses<CreateSessionResponse> =
+            on_blocking_response(conn, handle_token.as_str(), || {
+                self.proxy.create_session(CreateSessionOption {
+                    handle_token: &handle_token,
+                    session_handle_token: &session_handle_token,
+                })?;
 
-        _ = self.proxy.create_session(CreateSessionOption {
-            handle_token: &handle_token,
-            session_handle_token: &session_handle_token,
-        })?;
-
-        let resp = resp_it
-            .next()
-            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
-
-        let mut resp = resp.args()?;
+                Ok(())
+            })?;
 
         if !resp.is_success() {
             return Err(XCapError::new(format!(
@@ -185,8 +182,6 @@ impl ScreenCast<'_> {
                 resp.code
             )));
         }
-
-        let resp: CreateSessionResponse = resp.deserialize();
 
         let session_path = session_handle_path(&conn, &session_handle_token)?;
         if session_path.as_str() != resp.session_handle.as_str() {
@@ -198,47 +193,34 @@ impl ScreenCast<'_> {
 
     pub fn select_sources(&self, session: &OwnedObjectPath) -> XCapResult<()> {
         let conn = get_zbus_connection();
+        let handle_token = generate_token_handle();
 
-        let handle_token = format!("xcap_sess_{}", rand::random::<u32>());
-        // let portal_request = get_zbus_portal_request(conn, &handle_token)?;
-        let req_handle_path = request_handle_path(conn, &handle_token)?;
+        let resp: Responses<()> = on_blocking_response(conn, handle_token.as_str(), || {
+            let restore_token = if let Some(ref token) = self.restore_token
+                && self.flags.contains(ScreenCastFlag::SavePermission)
+            {
+                Some(token.clone())
+            } else {
+                None
+            };
 
-        let req_proxy = RequestProxyBlocking::new(&conn, req_handle_path)?;
-        let mut resp_it = req_proxy.receive_response()?;
+            const PERSIST_MODE: PersistMode = PersistMode::None;
+            self.proxy.select_sources(
+                session.as_ref(),
+                SelectSourcesOption {
+                    handle_token: &handle_token,
+                    types: self.sources,
+                    multiple: self.flags.contains(ScreenCastFlag::EnableMulti),
+                    cursor_mode: self
+                        .cursor_modes
+                        .best_mode(self.flags.contains(ScreenCastFlag::HideCursor)),
+                    restore_token: restore_token.as_deref(),
+                    persist_mode: PERSIST_MODE,
+                },
+            )?;
 
-        /*options.insert("handle_token", Value::from(handle_token));
-                options.insert("types", Value::from(1_u32));
-                options.insert("multiple", Value::from(false));
-        */
-        let restore_token = if let Some(ref token) = self.restore_token
-            && self.flags.contains(ScreenCastFlag::SavePermission)
-        {
-            Some(token.clone())
-        } else {
-            None
-        };
-
-        const PERSIST_MODE: PersistMode = PersistMode::None;
-        self.proxy.select_sources(
-            session.as_ref(),
-            SelectSourcesOption {
-                handle_token: &handle_token,
-                types: self.sources,
-                multiple: self.flags.contains(ScreenCastFlag::EnableMulti),
-                cursor_mode: self
-                    .cursor_modes
-                    .best_mode(self.flags.contains(ScreenCastFlag::HideCursor)),
-                restore_token: restore_token.as_deref(),
-                persist_mode: PERSIST_MODE,
-            },
-        )?;
-
-        // portal_request.receive_signal("Response")?;
-
-        let resp = resp_it
-            .next()
-            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
-        let resp = resp.args()?;
+            Ok(())
+        })?;
 
         if !resp.is_success() {
             return Err(XCapError::new(format!(
@@ -256,30 +238,20 @@ impl ScreenCast<'_> {
         session: &OwnedObjectPath,
     ) -> XCapResult<screencast::StartResponse> {
         let conn = get_zbus_connection();
+        let handle_token = generate_token_handle();
 
-        // let mut options = HashMap::new();
-        let handle_token = format!("xcap_{}", rand::random::<u32>().to_string());
-        let req_path = request_handle_path(conn, &handle_token)?;
-        let req_proxy = RequestProxyBlocking::new(&conn, req_path)?;
-        let mut resp_it = req_proxy.receive_response()?;
-        // let portal_request = get_zbus_portal_request(conn, &handle_token)?;
+        let resp: Responses<StartResponse> =
+            on_blocking_response(conn, handle_token.as_str(), || {
+                self.proxy.start(
+                    session.as_ref(),
+                    window_handle.unwrap_or(""),
+                    StartOption {
+                        handle_token: &handle_token,
+                    },
+                )?;
 
-        // options.insert("handle_token", Value::from(&handle_token));
-
-        // self.proxy.call_method("Start", &(session, "", options))?;
-
-        self.proxy.start(
-            session.as_ref(),
-            window_handle.unwrap_or(""),
-            StartOption {
-                handle_token: &handle_token,
-            },
-        )?;
-
-        let resp = resp_it
-            .next()
-            .ok_or_else(|| XCapError::new("failed to get response from portal"))?;
-        let mut resp = resp.args()?;
+                Ok(())
+            })?;
 
         if !resp.is_success() {
             return Err(XCapError::new(format!(
@@ -288,9 +260,7 @@ impl ScreenCast<'_> {
             )));
         }
 
-        // wait_zbus_response(&portal_request)
-
-        Ok(resp.deserialize())
+        Ok(resp.results().clone())
     }
 }
 
