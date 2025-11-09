@@ -62,32 +62,6 @@ use zbus::{
 
 const SCREEN_CAST_TOKEN_FILE_PATH: &str = "RESTORE_TOKEN";
 
-#[allow(dead_code)]
-#[derive(DeserializeDict, Type, Debug)]
-#[zvariant(signature = "dict")]
-pub struct ScreenCastCreateSessionResponse {
-    session_handle: String,
-}
-
-#[allow(dead_code)]
-#[derive(DeserializeDict, Type, Debug)]
-#[zvariant(signature = "dict")]
-pub struct ScreenCastStartStream {
-    pub id: Option<String>,
-    pub position: Option<(i32, i32)>,
-    pub size: Option<(i32, i32)>,
-    pub source_type: Option<u32>,
-    pub mapping_id: Option<String>,
-}
-
-#[derive(DeserializeDict, Type, Debug)]
-#[zvariant(signature = "dict")]
-pub struct ScreenCastStartResponse {
-    pub streams: Option<Vec<(u32, ScreenCastStartStream)>>,
-    #[allow(dead_code)]
-    pub restore_token: Option<String>,
-}
-
 bitflags! {
     #[derive(PartialEq, Ord, PartialOrd, Eq, Copy, Clone)]
     struct ScreenCastFlag : u8 {
