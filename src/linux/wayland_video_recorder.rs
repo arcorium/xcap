@@ -4,15 +4,15 @@ use super::{
     utils::{get_zbus_connection, get_zbus_portal_request, wait_zbus_response},
 };
 use crate::dir::{data_dir, project_dir};
-use crate::platform::dbus::request::{RequestProxyBlocking, request_handle_path};
+use crate::platform::dbus::request::{request_handle_path, RequestProxyBlocking};
 use crate::platform::dbus::screencast;
 use crate::platform::dbus::screencast::{
     CreateSessionOption, CreateSessionResponse, CursorModes, PersistMode, ScreenCastProxyBlocking,
-    SelectSourcesOptionMap, SelectSourcesOptions, SourceType, StartOptionMap, StartOptions,
+    SelectSourcesOption, SourceType, StartOption,
 };
 use crate::platform::dbus::session::session_handle_path;
 use crate::video_recorder::Condition;
-use crate::{XCapError, XCapResult, video_recorder::Frame};
+use crate::{video_recorder::Frame, XCapError, XCapResult};
 use bitflags::bitflags;
 use log::{error, info, trace};
 use pipewire::context::{ContextBox, ContextRc};
@@ -26,12 +26,12 @@ use pipewire::{
     properties,
     spa::{
         param::{
-            ParamType,
             format::{FormatProperties, MediaSubtype, MediaType},
             format_utils,
             video::{VideoFormat, VideoInfoRaw},
+            ParamType,
         },
-        pod::{self, Pod, serialize::PodSerializer},
+        pod::{self, serialize::PodSerializer, Pod},
         utils::{Direction, Fraction, Rectangle, SpaTypes},
     },
     stream::{Stream, StreamFlags},
@@ -45,9 +45,9 @@ use std::{
     fmt,
     io::Cursor,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
+        Arc,
     },
     thread,
 };
@@ -219,19 +219,19 @@ impl ScreenCast<'_> {
         };
 
         const PERSIST_MODE: PersistMode = PersistMode::None;
-        self.proxy.select_sources(SelectSourcesOptions {
-            session_handle: session.as_ref(),
-            options: SelectSourcesOptionMap {
+        self.proxy.select_sources(
+            session.as_ref(),
+            SelectSourcesOption {
                 handle_token: &handle_token,
                 types: self.sources,
                 multiple: self.flags.contains(ScreenCastFlag::EnableMulti),
                 cursor_mode: self
                     .cursor_modes
                     .best_mode(self.flags.contains(ScreenCastFlag::HideCursor)),
-                restore_token,
+                restore_token: restore_token.as_deref(),
                 persist_mode: PERSIST_MODE,
             },
-        })?;
+        )?;
 
         // portal_request.receive_signal("Response")?;
 
@@ -268,13 +268,13 @@ impl ScreenCast<'_> {
 
         // self.proxy.call_method("Start", &(session, "", options))?;
 
-        self.proxy.start(StartOptions {
-            session_handle: session.as_ref(),
-            parent_window: window_handle.or(Some("")).unwrap(),
-            options: StartOptionMap {
+        self.proxy.start(
+            session.as_ref(),
+            window_handle.unwrap_or(""),
+            StartOption {
                 handle_token: &handle_token,
             },
-        })?;
+        )?;
 
         let resp = resp_it
             .next()
@@ -335,7 +335,7 @@ impl WaylandVideoRecorder {
         // 获取流节点ID
         let stream_id = response
             .streams
-            // .ok_or(XCapError::new("Stream ID not found"))?
+            .ok_or(XCapError::new("Stream ID not found"))?
             .first()
             .ok_or(XCapError::new("Stream ID not found"))?
             .pipewire_node_id;

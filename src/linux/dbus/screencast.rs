@@ -1,11 +1,8 @@
-use crate::platform::dbus::request::FromResponse;
+use crate::platform::dbus::request::{FromResponse, ResponseMap};
 use crate::{XCapError, XCapResult};
 use bitflags::bitflags;
-use std::collections::HashMap;
 use std::ops::BitAnd;
 use zbus::zvariant;
-use zbus::zvariant::Value::Value;
-use zbus::zvariant::{ObjectPath, OwnedValue, Signature};
 
 #[derive(zvariant::SerializeDict, zvariant::Type, Debug)]
 #[zvariant(signature = "a{sv}")]
@@ -24,7 +21,7 @@ impl CreateSessionResponse {
 }
 
 impl FromResponse for CreateSessionResponse {
-    fn try_from_response(map: &mut HashMap<String, OwnedValue>) -> XCapResult<Self> {
+    fn try_from_response(map: &mut ResponseMap) -> XCapResult<Self> {
         Ok(Self {
             session_handle: map
                 .remove(Self::KEYS[0])
@@ -40,7 +37,7 @@ pub struct StartStreamProperty {
     pub id: Option<String>,
     pub position: Option<(i32, i32)>,
     pub size: Option<(i32, i32)>,
-    pub source_type: u32, // TODO: Change into SourceType
+    pub source_type: SourceType,
     pub mapping_id: Option<String>,
 }
 
@@ -49,7 +46,7 @@ impl StartStreamProperty {
 }
 
 impl FromResponse for StartStreamProperty {
-    fn try_from_response(map: &mut HashMap<String, OwnedValue>) -> XCapResult<Self> {
+    fn try_from_response(map: &mut ResponseMap) -> XCapResult<Self> {
         Ok(Self {
             id: map.remove(Self::KEYS[0]).and_then(|v| v.try_into().ok()),
             position: map.remove(Self::KEYS[1]).and_then(|v| v.try_into().ok()),
@@ -74,7 +71,7 @@ pub struct StartStreamResponse {
 #[derive(Debug, zvariant::Type, serde::Deserialize)]
 #[zvariant(signature = "a{sv}")]
 pub struct StartResponse {
-    pub streams: Vec<StartStreamResponse>,
+    pub streams: Option<Vec<StartStreamResponse>>,
     pub restore_token: Option<String>,
 }
 
@@ -83,12 +80,9 @@ impl StartResponse {
 }
 
 impl FromResponse for StartResponse {
-    fn try_from_response(map: &mut HashMap<String, OwnedValue>) -> XCapResult<Self> {
+    fn try_from_response(map: &mut ResponseMap) -> XCapResult<Self> {
         Ok(Self {
-            streams: map
-                .remove(Self::KEYS[0])
-                .ok_or_else(|| XCapError::new(format!("map has no key {}", Self::KEYS[0])))?
-                .try_into()?,
+            streams: map.remove(Self::KEYS[0]).and_then(|x| x.try_into().ok()),
             restore_token: map.remove(Self::KEYS[1]).and_then(|v| v.try_into().ok()),
         })
     }
@@ -123,19 +117,6 @@ impl From<zvariant::OwnedValue> for CursorModes {
     }
 }
 
-impl zvariant::Type for SourceType {
-    const SIGNATURE: &'static zvariant::Signature = &zvariant::Signature::U32;
-}
-
-impl From<zvariant::OwnedValue> for SourceType {
-    fn from(value: zvariant::OwnedValue) -> Self {
-        match value.downcast_ref::<u32>() {
-            Ok(v) => Self::from_bits_truncate(v),
-            Err(_) => Self::empty(),
-        }
-    }
-}
-
 impl CursorModes {
     pub fn is_hidden_available(&self) -> bool {
         const EXPECTED: CursorModes = CursorModes::Hidden.union(CursorModes::Metadata);
@@ -160,6 +141,34 @@ impl CursorModes {
     }
 }
 
+impl zvariant::Type for SourceType {
+    const SIGNATURE: &'static zvariant::Signature = &zvariant::Signature::U32;
+}
+
+impl From<zvariant::OwnedValue> for SourceType {
+    fn from(value: zvariant::OwnedValue) -> Self {
+        match value.downcast_ref::<u32>() {
+            Ok(v) => Self::from_bits_truncate(v),
+            Err(_) => Self::empty(),
+        }
+    }
+}
+
+impl TryFrom<zvariant::Value<'static>> for SourceType {
+    type Error = zvariant::Error;
+
+    fn try_from(value: zvariant::Value<'static>) -> Result<Self, Self::Error> {
+        let field: u32 = std::convert::TryInto::try_into(value)?;
+        Ok(Self::from_bits_truncate(field))
+    }
+}
+
+impl From<SourceType> for zvariant::Value<'static> {
+    fn from(s: SourceType) -> Self {
+        <::zbus::zvariant::Value as ::std::convert::From<_>>::from(s.0.0)
+    }
+}
+
 #[derive(Debug, zvariant::Type, serde::Deserialize, serde::Serialize)]
 #[repr(u32)]
 pub enum PersistMode {
@@ -170,32 +179,19 @@ pub enum PersistMode {
 
 #[derive(Debug, zvariant::Type, zvariant::SerializeDict)]
 #[zvariant(signature = "a{sv}")]
-pub struct SelectSourcesOptionMap<'a> {
+pub struct SelectSourcesOption<'a> {
     pub handle_token: &'a str,
     pub types: SourceType,
     pub multiple: bool,
     pub cursor_mode: CursorModes,
-    pub restore_token: Option<String>,
+    pub restore_token: Option<&'a str>,
     pub persist_mode: PersistMode,
-}
-
-#[derive(Debug, zvariant::Type, serde::Serialize)]
-pub struct SelectSourcesOptions<'a> {
-    pub session_handle: zvariant::ObjectPath<'a>,
-    pub options: SelectSourcesOptionMap<'a>,
 }
 
 #[derive(Debug, zvariant::Type, zvariant::SerializeDict)]
 #[zvariant(signature = "a{sv}")]
-pub struct StartOptionMap<'a> {
+pub struct StartOption<'a> {
     pub handle_token: &'a str,
-}
-
-#[derive(Debug, zvariant::Type, serde::Serialize)]
-pub struct StartOptions<'a> {
-    pub session_handle: zvariant::ObjectPath<'a>,
-    pub parent_window: &'a str,
-    pub options: StartOptionMap<'a>,
 }
 
 #[zbus::proxy(
@@ -211,10 +207,16 @@ pub trait ScreenCast {
 
     fn select_sources(
         &self,
-        options: SelectSourcesOptions<'_>,
+        session_handle: zvariant::ObjectPath<'_>,
+        options: SelectSourcesOption<'_>,
     ) -> zbus::Result<zvariant::OwnedObjectPath>;
 
-    fn start(&self, options: StartOptions<'_>) -> zbus::Result<zvariant::OwnedObjectPath>;
+    fn start(
+        &self,
+        session_handle: zvariant::ObjectPath<'_>,
+        parent_window: &'_ str,
+        options: StartOption<'_>,
+    ) -> zbus::Result<zvariant::OwnedObjectPath>;
 
     #[zbus(property)]
     fn available_cursor_modes(&self) -> zbus::Result<CursorModes>;
@@ -222,6 +224,6 @@ pub trait ScreenCast {
     #[zbus(property)]
     fn available_source_types(&self) -> zbus::Result<SourceType>;
 
-    #[zbus(property)]
+    #[zbus(property, name = "version")]
     fn version(&self) -> zbus::Result<u32>;
 }

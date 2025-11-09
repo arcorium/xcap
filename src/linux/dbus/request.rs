@@ -1,22 +1,30 @@
 use crate::platform::utils::Connection;
 use crate::{XCapError, XCapResult};
 use const_format::concatcp;
+use log::trace;
 use pipewire::spa::spa_interface_call_method;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::{Deref, DerefMut};
 use xcb::x::Error::Request;
 use zbus::zvariant;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 const REQUEST_PATH_PREFIX: &str = concatcp!(super::DESKTOP_PATH, "/request");
 
+pub type ResponseMap = HashMap<String, zvariant::OwnedValue>;
+
 pub trait FromResponse: Sized {
-    fn from_response(map: &mut HashMap<String, OwnedValue>) -> Self {
+    fn from_response(map: &mut ResponseMap) -> Self {
         Self::try_from_response(map).expect("Failed to deserialize response")
     }
 
-    fn try_from_response(map: &mut HashMap<String, OwnedValue>) -> XCapResult<Self>;
+    fn try_from_response(map: &mut ResponseMap) -> XCapResult<Self>;
+}
+
+impl FromResponse for () {
+    fn try_from_response(_: &mut ResponseMap) -> XCapResult<Self> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, zvariant::Type, serde::Deserialize, Clone, Copy)]
@@ -79,20 +87,16 @@ pub trait Request {
     fn close(&self) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    fn response(
-        &self,
-        code: ResponseCode,
-        results: HashMap<String, zvariant::OwnedValue>,
-    ) -> zbus::Result<()>;
+    fn response(&self, code: ResponseCode, results: ResponseMap) -> zbus::Result<()>;
 }
 
-impl ResponseArgs<'_> {
+impl<'a> ResponseArgs<'a> {
     pub fn is_success(&self) -> bool {
         self.code.is_success()
     }
 
     pub fn deserialize<T: FromResponse>(&mut self) -> T {
-        T::from_response(self)
+        T::from_response(&mut self.results)
     }
 
     pub fn try_deserialize<T: FromResponse>(&mut self) -> XCapResult<T> {
@@ -101,7 +105,7 @@ impl ResponseArgs<'_> {
 }
 
 impl Deref for ResponseArgs<'_> {
-    type Target = HashMap<String, zvariant::OwnedValue>;
+    type Target = ResponseMap;
 
     fn deref(&self) -> &Self::Target {
         &self.results
@@ -114,9 +118,12 @@ impl DerefMut for ResponseArgs<'_> {
     }
 }
 
-pub fn request_handle_path(conn: &Connection, token: &str) -> XCapResult<OwnedObjectPath> {
+pub fn request_handle_path(
+    conn: &Connection,
+    token: &str,
+) -> XCapResult<zvariant::OwnedObjectPath> {
     let fmt = format!("{}/{}/{}", REQUEST_PATH_PREFIX, conn.unique_name(), token);
-    Ok(OwnedObjectPath::try_from(fmt)?)
+    Ok(zvariant::OwnedObjectPath::try_from(fmt)?)
 }
 
 pub fn on_blocking_response<T: FromResponse, F>(
@@ -140,7 +147,7 @@ where
     let mut resp = resp.args()?;
 
     if !resp.is_success() {
-        return Err(XCapError::new("Response code is not success"));
+        trace!("got {}, response code is not success", resp.code);
     }
 
     Ok(Responses::<T> {
