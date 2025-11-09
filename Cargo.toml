@@ -19,8 +19,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 scopeguard = "1.2"
 thiserror = "2.0"
-directories = {version = "6"}
-tempfile = {version = "3.23"}
+directories = { version = "6" }
+tempfile = { version = "3.23" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3"
@@ -55,8 +55,8 @@ windows = { version = "0.61", features = [
 
 [target.'cfg(target_os="linux")'.dependencies]
 url = "2.5"
-zbus = {version = "5.12"}
-zbus_macros = {version = "5.12"}
+zbus = { version = "5.12" }
+zbus_macros = { version = "5.12" }
 rand = "0.9"
 serde = "1.0"
 pipewire = "0.9"
@@ -65,7 +65,10 @@ libwayshot-xcap = "0.3"
 percent-encoding = "2.3"
 xcb = { version = "1.5", features = ["randr"] }
 const_format = "0.2"
-bitflags = {version = "2.10", features = ["serde"]}
+bitflags = { version = "2.10", features = ["serde"] }
+wayland-client = { version = "0.31", features = ["log"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [dev-dependencies]
 fs_extra = "1.3"

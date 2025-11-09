@@ -121,7 +121,7 @@ fn wlroots_screenshot(
         rgba_image.height(),
         rgba_image.to_rgba8().into_vec(),
     )
-    .expect("Conversion of PNG -> Raw -> PNG does not fail");
+        .expect("Conversion of PNG -> Raw -> PNG does not fail");
 
     Ok(image)
 }
@@ -145,6 +145,7 @@ pub fn wayland_capture(x: i32, y: i32, width: i32, height: i32) -> XCapResult<Rg
 
     res
 }
+
 #[test]
 fn screnshot_multithreaded() {
     fn make_screenshots() {

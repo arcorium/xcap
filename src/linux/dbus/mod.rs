@@ -3,6 +3,7 @@ use const_format::concatcp;
 pub mod request;
 pub mod screencast;
 pub mod session;
+pub mod screenshot;
 
 const FREEDESKTOP_PATH: &str = "/org/freedesktop";
 const PORTAL_PATH: &str = concatcp!(FREEDESKTOP_PATH, "/portal");

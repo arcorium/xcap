@@ -9,3 +9,4 @@ pub mod impl_monitor;
 pub mod impl_video_recorder;
 pub mod impl_window;
 pub mod dbus;
+pub mod wlroot_video_recorder;

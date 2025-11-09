@@ -1,28 +1,25 @@
-use image::{RgbaImage, open};
+use image::{open, RgbaImage};
 use lazy_static::lazy_static;
-use log::info;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
+use std::ops::Deref;
 use std::sync::LazyLock;
 use std::{
     env::{self, var_os},
     path::{Path, PathBuf},
 };
-use std::ops::Deref;
 use url::Url;
 use xcb::{
-    ConnResult, Connection as XcbConnection, Xid,
-    randr::{GetMonitors, MonitorInfoBuf, Output},
-    x::{Atom, InternAtom, ScreenBuf},
+    randr::{GetMonitors, MonitorInfoBuf, Output}, x::{Atom, InternAtom, ScreenBuf}, ConnResult,
+    Connection as XcbConnection,
+    Xid,
 };
 use zbus::{
-    Result as ZBusResult,
     blocking::{Connection as ZBusConnection, Proxy},
-    zvariant,
     zvariant::Type,
 };
 
-use crate::{XCapError, error::XCapResult};
+use crate::{error::XCapResult, XCapError};
 
 lazy_static! {
     static ref XCB_CONNECTION_AND_INDEX: ConnResult<(XcbConnection, i32)> = {
@@ -84,6 +81,18 @@ pub fn wayland_detect() -> bool {
         .to_string();
 
     xdg_session_type.eq("wayland") || wayland_display.to_lowercase().contains("wayland")
+}
+
+pub fn is_wlroot_flavor() -> bool {
+    const WLROOT_FLAVORED_DESKTOPS: &[&str] =
+        &["sway", "hyprland", "river", "labwc", "wayfire", "hikari", "cosmic", "niri"];
+
+    let desktop = var_os("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+
+    WLROOT_FLAVORED_DESKTOPS.contains(&desktop.as_str())
 }
 
 pub fn get_current_screen_buf() -> XCapResult<ScreenBuf> {
